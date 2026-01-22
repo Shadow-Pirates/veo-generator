@@ -3,9 +3,12 @@ import { useState, useEffect } from 'react'
 import Layout from './components/Layout'
 import VideoGenerator from './pages/VideoGenerator'
 import ImageGenerator from './pages/ImageGenerator'
+import Tasks from './pages/Tasks'
 import History from './pages/History'
+import Favorites from './pages/Favorites'
 import Templates from './pages/Templates'
 import Settings from './pages/Settings'
+import Guide from './pages/Guide'
 import { Toaster } from './components/ui/toaster'
 
 function App() {
@@ -23,6 +26,14 @@ function App() {
       setIsReady(true)
     })
   }, [])
+
+  useEffect(() => {
+    if (!isReady) return
+    try {
+      window.electronAPI?.appReady?.()
+    } catch {
+    }
+  }, [isReady])
 
   const handleApiKeyChange = (key: string) => {
     setApiKey(key)
@@ -45,9 +56,12 @@ function App() {
       <Routes>
         <Route path="/" element={<VideoGenerator apiKey={apiKey} onApiKeyChange={handleApiKeyChange} />} />
         <Route path="/image" element={<ImageGenerator apiKey={apiKey} onApiKeyChange={handleApiKeyChange} />} />
+        <Route path="/tasks" element={<Tasks apiKey={apiKey} />} />
         <Route path="/history" element={<History apiKey={apiKey} />} />
+        <Route path="/favorites" element={<Favorites apiKey={apiKey} />} />
         <Route path="/templates" element={<Templates />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/guide" element={<Guide />} />
       </Routes>
       <Toaster />
     </Layout>

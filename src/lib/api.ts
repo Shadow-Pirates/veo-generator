@@ -7,24 +7,39 @@ declare global {
       generateImage: (params: ImageGenParams) => Promise<ImageResult>
       generateVideo: (params: VideoGenParams) => Promise<VideoResult>
       pollVideoStatus: (taskId: string, apiKey: string) => Promise<VideoStatus>
+      downloadVideo: (taskId: string, apiKey: string) => Promise<VideoStatus>
+      getDraft: (key: string) => Promise<any>
+      setDraft: (key: string, value: any) => Promise<{ success: boolean }>
+      clearDraft: (key: string) => Promise<{ success: boolean }>
+      getTasks: () => Promise<Generation[]>
       getHistory: (filters: HistoryFilters) => Promise<HistoryList>
       getHistoryItem: (id: string) => Promise<Generation>
       deleteHistory: (id: string) => Promise<void>
       toggleFavorite: (id: string) => Promise<{ id: string; is_favorite: boolean }>
       updateTags: (id: string, tags: string[]) => Promise<void>
       getStats: () => Promise<Stats>
+      getStorageStats: () => Promise<StorageStats>
+      cleanupStorage: (target: 'images' | 'videos' | 'thumbnails' | 'all') => Promise<{ success: boolean; basePath?: string; removedFiles?: number; freedBytes?: number; error?: string }>
+      listStorageFiles: (target: 'images' | 'videos' | 'thumbnails') => Promise<{ success: boolean; basePath?: string; dir?: string; files?: StorageFileItem[]; error?: string }>
+      deleteStorageFiles: (target: 'images' | 'videos' | 'thumbnails', filePaths: string[]) => Promise<{ success: boolean; removedFiles?: number; freedBytes?: number; error?: string }>
       getTemplates: () => Promise<Template[]>
       getTemplate: (id: number) => Promise<Template>
       createTemplate: (template: Partial<Template>) => Promise<{ id: number }>
       updateTemplate: (id: number, template: Partial<Template>) => Promise<void>
       deleteTemplate: (id: number) => Promise<void>
       toggleTemplateFavorite: (id: number) => Promise<{ id: number; is_favorite: boolean }>
+      syncBuiltinTemplates: () => Promise<{ success: boolean }>
       getFilePath: (relativePath: string) => Promise<string>
       openFile: (path: string) => Promise<void>
       selectDirectory: () => Promise<string | null>
+      deleteDirectory: (path: string) => Promise<{ success: boolean; error?: string }>
+      saveFileAs: (path: string, suggestedName?: string) => Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>
+      saveFilesToDirectory: (dirPath: string, items: Array<{ sourcePath: string; fileName: string }>) => Promise<{ success: boolean; saved?: number; failed?: number; errors?: string[]; dirPath?: string; error?: string }>
+      deleteLocalFile: (pathOrUrl: string) => Promise<{ success: boolean; freedBytes?: number; error?: string }>
       getSettings: () => Promise<Settings>
       saveSettings: (settings: Partial<Settings>) => Promise<void>
       getAppInfo: () => Promise<AppInfo>
+      appReady: () => void
     }
   }
 }
@@ -36,6 +51,7 @@ export interface ImageGenParams {
   negativePrompt?: string
   aspectRatio?: string
   numImages?: number
+  model?: string
   referenceImage?: ArrayBuffer
 }
 
@@ -53,6 +69,7 @@ export interface VideoGenParams {
   negativePrompt?: string
   aspectRatio?: string
   duration?: number
+  model?: string
   imageData?: ArrayBuffer
 }
 
@@ -75,6 +92,8 @@ export interface HistoryFilters {
   status?: string
   isFavorite?: boolean
   search?: string
+  startAt?: string
+  endAt?: string
   page?: number
   pageSize?: number
 }
@@ -118,6 +137,22 @@ export interface Stats {
   favorites: number
 }
 
+export interface StorageStats {
+  basePath: string
+  images: { fileCount: number; totalBytes: number }
+  videos: { fileCount: number; totalBytes: number }
+  thumbnails: { fileCount: number; totalBytes: number }
+  totalBytes: number
+}
+
+export interface StorageFileItem {
+  name: string
+  path: string
+  url: string
+  size: number
+  mtimeMs: number
+}
+
 export interface Template {
   id: number
   name: string
@@ -125,6 +160,7 @@ export interface Template {
   system_context?: string
   storyboard?: string
   negative_prompt?: string
+  source?: 'builtin' | 'user'
   is_favorite: boolean
   use_count: number
   created_at: string
@@ -135,6 +171,8 @@ export interface Settings {
   apiKey: string
   dataDir: string
   theme: string
+  closeToTray?: boolean
+  notifyTaskCompleted?: boolean
 }
 
 export interface AppInfo {
@@ -157,6 +195,26 @@ export const api = {
 
   async pollVideoStatus(taskId: string, apiKey: string): Promise<VideoStatus> {
     return window.electronAPI.pollVideoStatus(taskId, apiKey)
+  },
+
+  async downloadVideo(taskId: string, apiKey: string): Promise<VideoStatus> {
+    return window.electronAPI.downloadVideo(taskId, apiKey)
+  },
+
+  async getDraft(key: string): Promise<any> {
+    return window.electronAPI.getDraft(key)
+  },
+
+  async setDraft(key: string, value: any): Promise<{ success: boolean }> {
+    return window.electronAPI.setDraft(key, value)
+  },
+
+  async clearDraft(key: string): Promise<{ success: boolean }> {
+    return window.electronAPI.clearDraft(key)
+  },
+
+  async getTasks(): Promise<Generation[]> {
+    return window.electronAPI.getTasks()
   },
 
   // 历史记录
@@ -184,6 +242,22 @@ export const api = {
     return window.electronAPI.getStats()
   },
 
+  async getStorageStats(): Promise<StorageStats> {
+    return window.electronAPI.getStorageStats()
+  },
+
+  async cleanupStorage(target: 'images' | 'videos' | 'thumbnails' | 'all'): Promise<{ success: boolean; basePath?: string; removedFiles?: number; freedBytes?: number; error?: string }> {
+    return window.electronAPI.cleanupStorage(target)
+  },
+
+  async listStorageFiles(target: 'images' | 'videos' | 'thumbnails'): Promise<{ success: boolean; basePath?: string; dir?: string; files?: StorageFileItem[]; error?: string }> {
+    return window.electronAPI.listStorageFiles(target)
+  },
+
+  async deleteStorageFiles(target: 'images' | 'videos' | 'thumbnails', filePaths: string[]): Promise<{ success: boolean; removedFiles?: number; freedBytes?: number; error?: string }> {
+    return window.electronAPI.deleteStorageFiles(target, filePaths)
+  },
+
   // 模板
   async getTemplates(): Promise<Template[]> {
     return window.electronAPI.getTemplates()
@@ -209,6 +283,10 @@ export const api = {
     return window.electronAPI.toggleTemplateFavorite(id)
   },
 
+  async syncBuiltinTemplates(): Promise<{ success: boolean }> {
+    return window.electronAPI.syncBuiltinTemplates()
+  },
+
   // 文件
   async getFilePath(relativePath: string): Promise<string> {
     return window.electronAPI.getFilePath(relativePath)
@@ -220,6 +298,25 @@ export const api = {
 
   async selectDirectory(): Promise<string | null> {
     return window.electronAPI.selectDirectory()
+  },
+
+  async deleteDirectory(path: string): Promise<{ success: boolean; error?: string }> {
+    return window.electronAPI.deleteDirectory(path)
+  },
+
+  async saveFileAs(path: string, suggestedName?: string): Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }> {
+    return window.electronAPI.saveFileAs(path, suggestedName)
+  },
+
+  async saveFilesToDirectory(
+    dirPath: string,
+    items: Array<{ sourcePath: string; fileName: string }>
+  ): Promise<{ success: boolean; saved?: number; failed?: number; errors?: string[]; dirPath?: string; error?: string }> {
+    return window.electronAPI.saveFilesToDirectory(dirPath, items)
+  },
+
+  async deleteLocalFile(pathOrUrl: string): Promise<{ success: boolean; freedBytes?: number; error?: string }> {
+    return window.electronAPI.deleteLocalFile(pathOrUrl)
   },
 
   // 设置
@@ -240,13 +337,63 @@ export const api = {
 // 获取静态文件 URL（本地文件）
 export function getStaticUrl(path: string | null | undefined): string {
   if (!path) return ''
-  // 如果已经是完整的文件路径，直接返回 file:// 协议
-  if (path.startsWith('file://')) {
-    return path
+  const encodeLocalPath = (p: string) => {
+    // Encode everything that could break URL parsing (notably '#' and '?'), while keeping slashes.
+    return encodeURIComponent(p).replace(/%2F/g, '/').replace(/%5C/g, '/').replace(/%3A/g, ':')
   }
-  // 如果是绝对路径，转换为 file:// 协议
+  // 如果已经是完整的本地协议路径，直接返回
+  if (path.startsWith('local-file://')) {
+    try {
+      const url = new URL(path)
+      // 兼容错误格式：local-file://c/Users/... （host=c 丢了盘符冒号）
+      if (url.hostname && url.hostname.length === 1) {
+        const drive = url.hostname.toUpperCase()
+        const rest = decodeURIComponent(url.pathname).replace(/^\/+/, '')
+        return `local-file:///${encodeLocalPath(`${drive}:/${rest}`)}`
+      }
+      if (path.includes('#') || path.includes('?')) {
+        const rawPath = decodeURIComponent(url.pathname)
+        const fixed = rawPath.startsWith('/') ? rawPath.slice(1) : rawPath
+        return `local-file:///${encodeLocalPath(fixed)}`
+      }
+      return path
+    } catch {
+      if (path.includes('#') || path.includes('?')) {
+        return path.replace(/#/g, '%23').replace(/\?/g, '%3F')
+      }
+      return path
+    }
+  }
+  // 如果已经是 file://，尽量转换到 local-file://（兼容旧数据）
+  if (path.startsWith('file://')) {
+    try {
+      const url = new URL(path)
+      // 兼容旧格式：file://C:/Users/...（host=C，pathname=/Users/...）
+      if (url.hostname && url.hostname.length === 1) {
+        const drive = url.hostname.toUpperCase()
+        const rest = decodeURIComponent(url.pathname).replace(/^\/+/, '')
+        return `local-file:///${encodeLocalPath(`${drive}:/${rest}`)}`
+      }
+
+      let p = decodeURIComponent(url.pathname)
+      // Windows 下 file:///C:/... 会变成 /C:/...
+      if (p.startsWith('/') && /^[A-Za-z]:/.test(p.slice(1))) {
+        p = p.slice(1)
+      }
+      // 有些情况下可能出现多余的前导斜杠（例如 file:////C:/...）
+      p = p.replace(/^\/+/, '')
+
+      const normalized = p.replace(/\\/g, '/')
+      return `local-file:///${encodeLocalPath(normalized)}`
+    } catch {
+      const raw = path.replace(/^file:\/\//, '')
+      const normalized = raw.replace(/^\/+/, '').replace(/\\/g, '/')
+      return `local-file:///${encodeLocalPath(normalized)}`
+    }
+  }
+  // 如果是绝对路径，转换为 local-file:// 协议
   if (path.match(/^[A-Za-z]:\\/)) {
-    return `file://${path.replace(/\\/g, '/')}`
+    return `local-file:///${encodeLocalPath(path.replace(/\\/g, '/'))}`
   }
   // 否则返回原路径
   return path

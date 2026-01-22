@@ -19,11 +19,15 @@
     "better-sqlite3": "^9.4.3",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
+    "conf": "^10.2.0",
     "electron-store": "^8.1.0",
     "lucide-react": "^0.303.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-markdown": "^9.1.0",
+    "react-player": "^2.16.0",
     "react-router-dom": "^6.21.1",
+    "remark-gfm": "^4.0.0",
     "tailwind-merge": "^2.2.0",
     "uuid": "^9.0.0"
   },
@@ -51,17 +55,20 @@
   },
   "build": {
     "appId": "com.veo-studio.app",
-    "productName": "Veo Studio",
+    "productName": "交绘AI",
     "directories": {
       "output": "release"
     },
+    "npmRebuild": false,
     "files": [
       "dist/**/*",
-      "dist-electron/**/*"
+      "dist-electron/**/*",
+      "templates.json"
     ],
     "win": {
       "target": [
-        "nsis"
+        "nsis",
+        "dir"
       ],
       "icon": "resources/icon.ico"
     },
@@ -69,7 +76,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "include": "resources/installer.nsh"
     },
     "extraResources": [
       {

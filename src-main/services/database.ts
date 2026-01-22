@@ -1,9 +1,49 @@
 import Database from 'better-sqlite3'
+import { EventEmitter } from 'events'
 import path from 'path'
+import fs from 'fs'
 import { app } from 'electron'
 import { v4 as uuidv4 } from 'uuid'
+import { getDataBasePath } from './file'
 
 let db: Database.Database | null = null
+let currentDbPath: string | null = null
+
+export const generationEvents = new EventEmitter()
+
+export function closeDatabase() {
+  if (db) {
+    try {
+      db.close()
+    } catch {
+      // ignore
+    }
+    db = null
+  }
+}
+
+export function rewriteGenerationPaths(oldBase: string, newBase: string) {
+  if (!oldBase || !newBase) return
+  if (oldBase === newBase) return
+
+  const db = getDatabase()
+
+  // normalize to Windows-style (stored paths are typically like C:\...)
+  const oldWin = oldBase.replace(/\//g, '\\').replace(/\\+$/g, '')
+  const newWin = newBase.replace(/\//g, '\\').replace(/\\+$/g, '')
+
+  db.prepare(
+    `UPDATE generations
+     SET result_path = REPLACE(result_path, ?, ?)
+     WHERE result_path IS NOT NULL AND result_path LIKE ?`
+  ).run(oldWin, newWin, `${oldWin}%`)
+
+  db.prepare(
+    `UPDATE generations
+     SET thumbnail_path = REPLACE(thumbnail_path, ?, ?)
+     WHERE thumbnail_path IS NOT NULL AND thumbnail_path LIKE ?`
+  ).run(oldWin, newWin, `${oldWin}%`)
+}
 
 export function getDatabase(): Database.Database {
   if (!db) {
@@ -13,8 +53,27 @@ export function getDatabase(): Database.Database {
 }
 
 export function initDatabase() {
-  const dbPath = path.join(app.getPath('userData'), 'veo-studio.db')
+  const dbPath = path.join(getDataBasePath(), 'veo-studio.db')
+  const legacyDbPath = path.join(app.getPath('userData'), 'veo-studio.db')
+
+  try {
+    if (!fs.existsSync(dbPath)) {
+      fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+
+      if (currentDbPath && currentDbPath !== dbPath && fs.existsSync(currentDbPath)) {
+        fs.copyFileSync(currentDbPath, dbPath)
+      } else if (legacyDbPath !== dbPath && fs.existsSync(legacyDbPath)) {
+        fs.copyFileSync(legacyDbPath, dbPath)
+      }
+    }
+  } catch {
+    // ignore migration failures; we'll create a new db
+  }
+
+  closeDatabase()
+
   db = new Database(dbPath)
+  currentDbPath = dbPath
   
   // 创建表
   db.exec(`
@@ -50,6 +109,7 @@ export function initDatabase() {
       system_context TEXT,
       storyboard TEXT,
       negative_prompt TEXT,
+      source TEXT DEFAULT 'user',
       is_favorite INTEGER DEFAULT 0,
       use_count INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
@@ -62,9 +122,106 @@ export function initDatabase() {
       updated_at TEXT
     );
   `)
+
+  ensureTemplatesSchema()
+  importBuiltinTemplatesFromJson()
   
   console.log('Database initialized at:', dbPath)
   return db
+}
+
+export function syncBuiltinTemplates() {
+  ensureTemplatesSchema()
+  importBuiltinTemplatesFromJson()
+  return { success: true }
+}
+
+function ensureTemplatesSchema() {
+  const db = getDatabase()
+  const cols = db.prepare("PRAGMA table_info(templates)").all() as any[]
+  const hasSource = cols.some((c) => c.name === 'source')
+  if (!hasSource) {
+    db.exec("ALTER TABLE templates ADD COLUMN source TEXT DEFAULT 'user'")
+  }
+}
+
+function resolveBuiltinTemplatesFilePath(): string | null {
+  const candidates = [
+    path.join(process.cwd(), 'templates.json'),
+    path.join(process.cwd(), 'template.json'),
+    path.join(app.getAppPath(), 'templates.json'),
+    path.join(app.getAppPath(), 'template.json'),
+    path.join(process.resourcesPath || '', 'templates.json'),
+    path.join(process.resourcesPath || '', 'template.json'),
+  ]
+
+  for (const p of candidates) {
+    if (!p) continue
+    try {
+      if (fs.existsSync(p)) return p
+    } catch {
+      // ignore
+    }
+  }
+  return null
+}
+
+function importBuiltinTemplatesFromJson() {
+  const db = getDatabase()
+  const jsonPath = resolveBuiltinTemplatesFilePath()
+  if (!jsonPath) return
+
+  let raw = ''
+  try {
+    raw = fs.readFileSync(jsonPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  let items: any[] = []
+  try {
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) items = parsed
+  } catch {
+    return
+  }
+
+  const selectStmt = db.prepare("SELECT id FROM templates WHERE source = 'builtin' AND name = ?")
+  const insertStmt = db.prepare(
+    `INSERT INTO templates (name, category, system_context, storyboard, negative_prompt, source)
+     VALUES (?, ?, ?, ?, ?, 'builtin')`
+  )
+  const updateStmt = db.prepare(
+    `UPDATE templates
+     SET category = ?, system_context = ?, storyboard = ?, negative_prompt = ?, updated_at = datetime('now')
+     WHERE id = ?`
+  )
+
+  const tx = db.transaction((arr: any[]) => {
+    for (const t of arr) {
+      if (!t || typeof t.name !== 'string') continue
+      const name = t.name.trim()
+      if (!name) continue
+
+      const category = typeof t.category === 'string' ? t.category : null
+      const systemContext = typeof t.system_context === 'string' ? t.system_context : null
+      const storyboard = typeof t.storyboard === 'string' ? t.storyboard : null
+      const negativePrompt = typeof t.negative_prompt === 'string' ? t.negative_prompt : null
+
+      const row = selectStmt.get(name) as any
+      if (!row) {
+        insertStmt.run(name, category, systemContext, storyboard, negativePrompt)
+      } else {
+        updateStmt.run(category, systemContext, storyboard, negativePrompt, row.id)
+      }
+    }
+  })
+
+  try {
+    tx(items)
+  } catch {
+    // ignore
+  }
 }
 
 // Generation 操作
@@ -114,6 +271,10 @@ export function updateGeneration(id: string, data: {
   errorMessage?: string
 }) {
   const db = getDatabase()
+  const prev = db.prepare('SELECT status, type, prompt FROM generations WHERE id = ?').get(id) as any
+  const prevStatus = prev?.status
+  const prevType = prev?.type
+  const prevPrompt = prev?.prompt
   const updates: string[] = []
   const values: any[] = []
   
@@ -155,6 +316,85 @@ export function updateGeneration(id: string, data: {
   
   const stmt = db.prepare(`UPDATE generations SET ${updates.join(', ')} WHERE id = ?`)
   stmt.run(...values)
+
+  if (data.status === 'completed' && prevStatus !== 'completed') {
+    generationEvents.emit('completed', {
+      id,
+      type: prevType,
+      prompt: prevPrompt,
+    })
+  }
+}
+
+export function updateGenerationByTaskId(taskId: string, data: {
+  status?: string
+  progress?: number
+  resultPath?: string
+  resultUrl?: string
+  thumbnailPath?: string
+  apiResponse?: any
+  errorMessage?: string
+}) {
+  const db = getDatabase()
+  const row = db
+    .prepare('SELECT id FROM generations WHERE task_id = ? ORDER BY created_at DESC LIMIT 1')
+    .get(taskId) as any
+  if (!row?.id) return false
+  updateGeneration(row.id, data)
+  return true
+}
+
+export function getGenerationByTaskId(taskId: string) {
+  const db = getDatabase()
+  const row = db
+    .prepare('SELECT * FROM generations WHERE task_id = ? ORDER BY created_at DESC LIMIT 1')
+    .get(taskId) as any
+  if (row) {
+    return parseGenerationRow(row)
+  }
+  return null
+}
+
+export function listActiveGenerations(limit: number = 200) {
+  const db = getDatabase()
+  const rows = db
+    .prepare(
+      `SELECT * FROM generations
+       WHERE status <> 'completed'
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .all(limit) as any[]
+  return rows.map(parseGenerationRow)
+}
+
+export function listTaskGenerations(limit: number = 500) {
+  const db = getDatabase()
+  const rows = db
+    .prepare(
+      `SELECT * FROM generations
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .all(limit) as any[]
+  return rows.map(parseGenerationRow)
+}
+
+export function listPendingVideoTaskIds(limit: number = 200): string[] {
+  const db = getDatabase()
+  const rows = db
+    .prepare(
+      `SELECT task_id FROM generations
+       WHERE type = 'video'
+         AND task_id IS NOT NULL
+         AND task_id <> ''
+         AND status <> 'completed'
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .all(limit) as any[]
+  const ids = rows.map(r => String(r.task_id || '')).filter(Boolean)
+  return Array.from(new Set(ids))
 }
 
 export function getGeneration(id: string) {
@@ -171,6 +411,8 @@ export function listGenerations(filters: {
   status?: string
   isFavorite?: boolean
   search?: string
+  startAt?: string
+  endAt?: string
   page?: number
   pageSize?: number
 }) {
@@ -193,6 +435,15 @@ export function listGenerations(filters: {
   if (filters.search) {
     conditions.push('prompt LIKE ?')
     values.push(`%${filters.search}%`)
+  }
+
+  if (filters.startAt) {
+    conditions.push("datetime(created_at) >= datetime(?)")
+    values.push(filters.startAt)
+  }
+  if (filters.endAt) {
+    conditions.push("datetime(created_at) <= datetime(?)")
+    values.push(filters.endAt)
   }
   
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
@@ -280,7 +531,11 @@ function parseGenerationRow(row: any) {
 // Template 操作
 export function listTemplates() {
   const db = getDatabase()
-  const rows = db.prepare('SELECT * FROM templates ORDER BY use_count DESC, created_at DESC').all() as any[]
+  const rows = db
+    .prepare(
+      "SELECT * FROM templates ORDER BY CASE WHEN source = 'builtin' THEN 0 ELSE 1 END, use_count DESC, created_at DESC"
+    )
+    .all() as any[]
   return rows.map(row => ({
     id: row.id,
     name: row.name,
@@ -288,6 +543,7 @@ export function listTemplates() {
     system_context: row.system_context,
     storyboard: row.storyboard,
     negative_prompt: row.negative_prompt,
+    source: row.source || 'user',
     is_favorite: row.is_favorite === 1,
     use_count: row.use_count,
     created_at: row.created_at,
@@ -306,6 +562,7 @@ export function getTemplate(id: number) {
       system_context: row.system_context,
       storyboard: row.storyboard,
       negative_prompt: row.negative_prompt,
+      source: row.source || 'user',
       is_favorite: row.is_favorite === 1,
       use_count: row.use_count,
       created_at: row.created_at,
@@ -319,14 +576,28 @@ export function createTemplate(data: {
   name: string
   category?: string
   systemContext?: string
+  system_context?: string
   storyboard?: string
   negativePrompt?: string
+  negative_prompt?: string
+  source?: string
 }) {
   const db = getDatabase()
+  const source = data.source === 'builtin' ? 'builtin' : 'user'
+
+  const systemContext = data.systemContext ?? data.system_context
+  const negativePrompt = data.negativePrompt ?? data.negative_prompt
   const result = db.prepare(`
-    INSERT INTO templates (name, category, system_context, storyboard, negative_prompt)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(data.name, data.category || null, data.systemContext || null, data.storyboard || null, data.negativePrompt || null)
+    INSERT INTO templates (name, category, system_context, storyboard, negative_prompt, source)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    data.name,
+    data.category || null,
+    systemContext || null,
+    data.storyboard || null,
+    negativePrompt || null,
+    source
+  )
   return result.lastInsertRowid
 }
 
@@ -334,10 +605,16 @@ export function updateTemplate(id: number, data: {
   name?: string
   category?: string
   systemContext?: string
+  system_context?: string
   storyboard?: string
   negativePrompt?: string
+  negative_prompt?: string
 }) {
   const db = getDatabase()
+  const row = db.prepare('SELECT source FROM templates WHERE id = ?').get(id) as any
+  if (row && row.source === 'builtin') {
+    throw new Error('Builtin templates cannot be updated')
+  }
   const updates: string[] = []
   const values: any[] = []
   
@@ -353,6 +630,10 @@ export function updateTemplate(id: number, data: {
     updates.push('system_context = ?')
     values.push(data.systemContext)
   }
+  if (data.system_context !== undefined) {
+    updates.push('system_context = ?')
+    values.push(data.system_context)
+  }
   if (data.storyboard !== undefined) {
     updates.push('storyboard = ?')
     values.push(data.storyboard)
@@ -360,6 +641,10 @@ export function updateTemplate(id: number, data: {
   if (data.negativePrompt !== undefined) {
     updates.push('negative_prompt = ?')
     values.push(data.negativePrompt)
+  }
+  if (data.negative_prompt !== undefined) {
+    updates.push('negative_prompt = ?')
+    values.push(data.negative_prompt)
   }
   
   if (updates.length > 0) {

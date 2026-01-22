@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
-import { createPortal } from 'react-dom'
-import { History as HistoryIcon, Search } from 'lucide-react'
+import { Star as StarIcon, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useToast } from '@/components/ui/use-toast'
@@ -9,38 +8,35 @@ import GenerationCard from '@/components/GenerationCard'
 import GenerationDetailModal from '@/components/GenerationDetailModal'
 import { formatDateShanghai } from '@/lib/datetime'
 
-interface HistoryProps {
+interface FavoritesProps {
   apiKey: string
 }
 
-export default function History({ apiKey: _ }: HistoryProps) {
+export default function Favorites({ apiKey: _ }: FavoritesProps) {
   const { toast } = useToast()
   const [generations, setGenerations] = useState<Generation[]>([])
   const [loading, setLoading] = useState(true)
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [search, setSearch] = useState('')
-  const [startAt, setStartAt] = useState('')
-  const [endAt, setEndAt] = useState('')
+  const [appliedSearch, setAppliedSearch] = useState('')
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [selectedGen, setSelectedGen] = useState<Generation | null>(null)
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
-  const [deleteTarget, setDeleteTarget] = useState<Generation | null>(null)
-  const [deleteSourceFiles, setDeleteSourceFiles] = useState(false)
-  const [deleting, setDeleting] = useState(false)
   const pageSize = 12
 
   useEffect(() => {
-    loadHistory()
-  }, [typeFilter, statusFilter, startAt, endAt, page])
+    loadFavorites()
+  }, [typeFilter, statusFilter, page, appliedSearch])
 
-  const loadHistory = async () => {
+  const loadFavorites = async () => {
     setLoading(true)
     try {
       const params: any = {
         page,
         pageSize,
+        isFavorite: true,
       }
       if (typeFilter !== 'all') {
         params.type = typeFilter
@@ -48,22 +44,15 @@ export default function History({ apiKey: _ }: HistoryProps) {
       if (statusFilter !== 'all') {
         params.status = statusFilter
       }
-      if (search) {
-        params.search = search
-      }
-
-      if (startAt) {
-        params.startAt = startAt
-      }
-      if (endAt) {
-        params.endAt = endAt
+      if (appliedSearch) {
+        params.search = appliedSearch
       }
 
       const response = await api.getHistory(params)
       setGenerations(response.items)
       setTotal(response.total)
     } catch (error) {
-      console.error('加载历史记录失败', error)
+      console.error('加载收藏失败', error)
     } finally {
       setLoading(false)
     }
@@ -71,16 +60,20 @@ export default function History({ apiKey: _ }: HistoryProps) {
 
   const handleSearch = () => {
     setPage(1)
-    loadHistory()
+    setAppliedSearch(search)
+    loadFavorites()
   }
 
   const handleToggleFavorite = async (id: string) => {
     try {
       const response = await api.toggleFavorite(id)
-      setGenerations(prev =>
-        prev.map(g => (g.id === id ? { ...g, is_favorite: response.is_favorite } : g))
-      )
-    } catch (error) {
+      if (!response.is_favorite) {
+        setGenerations(prev => prev.filter(g => g.id !== id))
+        setTotal(prev => Math.max(0, prev - 1))
+      } else {
+        setGenerations(prev => prev.map(g => (g.id === id ? { ...g, is_favorite: true } : g)))
+      }
+    } catch {
       toast({
         title: '操作失败',
         variant: 'destructive',
@@ -89,19 +82,11 @@ export default function History({ apiKey: _ }: HistoryProps) {
   }
 
   const handleDelete = async (gen: Generation) => {
-    setDeleteTarget(gen)
-    setDeleteSourceFiles(false)
-  }
-
-  const confirmDelete = async () => {
-    if (!deleteTarget) return
-    if (deleting) return
-    setDeleting(true)
+    if (!confirm('确定要删除这条记录吗？')) return
+    const shouldDeleteSource = confirm('是否同时删除源文件？')
 
     try {
-      const gen = deleteTarget
-
-      if (deleteSourceFiles) {
+      if (shouldDeleteSource) {
         const candidates = [gen.result_path, gen.thumbnail_path, ...(gen.reference_images || [])]
         for (const p of candidates) {
           if (!p) continue
@@ -111,7 +96,6 @@ export default function History({ apiKey: _ }: HistoryProps) {
 
       await api.deleteHistory(gen.id)
       setGenerations(prev => prev.filter(g => g.id !== gen.id))
-      setDeleteTarget(null)
       toast({
         title: '删除成功',
       })
@@ -121,8 +105,6 @@ export default function History({ apiKey: _ }: HistoryProps) {
         description: error?.message || '未知错误',
         variant: 'destructive',
       })
-    } finally {
-      setDeleting(false)
     }
   }
 
@@ -159,8 +141,8 @@ export default function History({ apiKey: _ }: HistoryProps) {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <HistoryIcon className="h-6 w-6 text-primary" />
-          <h1 className="text-2xl font-bold">历史记录</h1>
+          <StarIcon className="h-6 w-6 text-primary" />
+          <h1 className="text-2xl font-bold">我的收藏</h1>
           <span className="text-sm text-muted-foreground ml-2">共 {total} 条</span>
         </div>
       </div>
@@ -194,24 +176,6 @@ export default function History({ apiKey: _ }: HistoryProps) {
 
         <div className="flex-1 flex gap-2">
           <input
-            type="datetime-local"
-            value={startAt}
-            onChange={(e) => {
-              setStartAt(e.target.value)
-              setPage(1)
-            }}
-            className="h-10 px-3 border rounded-md bg-background"
-          />
-          <input
-            type="datetime-local"
-            value={endAt}
-            onChange={(e) => {
-              setEndAt(e.target.value)
-              setPage(1)
-            }}
-            className="h-10 px-3 border rounded-md bg-background"
-          />
-          <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -234,8 +198,8 @@ export default function History({ apiKey: _ }: HistoryProps) {
         </div>
       ) : generations.length === 0 ? (
         <div className="text-center py-12 text-muted-foreground">
-          <HistoryIcon className="h-12 w-12 mx-auto mb-4 opacity-50" />
-          <p>暂无历史记录</p>
+          <StarIcon className="h-12 w-12 mx-auto mb-4 opacity-50" />
+          <p>暂无收藏</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -255,7 +219,6 @@ export default function History({ apiKey: _ }: HistoryProps) {
         </div>
       )}
 
-      {/* 分页 */}
       {totalPages > 1 && (
         <div className="flex justify-center gap-2">
           <Button
@@ -280,48 +243,7 @@ export default function History({ apiKey: _ }: HistoryProps) {
         </div>
       )}
 
-      <GenerationDetailModal
-        gen={selectedGen}
-        onClose={() => setSelectedGen(null)}
-        onDownload={handleSaveAs}
-      />
-
-      {deleteTarget &&
-        createPortal(
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => (deleting ? null : setDeleteTarget(null))}>
-            <div className="w-full max-w-md rounded-lg border bg-background p-4" onClick={(e) => e.stopPropagation()}>
-              <div className="text-lg font-semibold">删除记录</div>
-              <div className="mt-2 text-sm text-muted-foreground">确定要删除这条记录吗？</div>
-
-              <label className="mt-4 flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={deleteSourceFiles}
-                  onChange={(e) => setDeleteSourceFiles(e.target.checked)}
-                />
-                同时删除本地源文件（图片/视频/缩略图）
-              </label>
-
-              <div className="mt-5 flex justify-end gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => setDeleteTarget(null)}
-                  disabled={deleting}
-                >
-                  取消
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={confirmDelete}
-                  disabled={deleting}
-                >
-                  {deleting ? '删除中...' : '确认删除'}
-                </Button>
-              </div>
-            </div>
-          </div>,
-          document.body
-        )}
+      <GenerationDetailModal gen={selectedGen} onClose={() => setSelectedGen(null)} onDownload={handleSaveAs} />
     </div>
   )
 }
